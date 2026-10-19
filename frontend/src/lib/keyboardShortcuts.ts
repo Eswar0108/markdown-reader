@@ -26,7 +26,8 @@ export type ActionId =
   | "view.openBrowserPreview"
   | "view.fullEditor"
   | "view.balancedSplit"
-  | "view.fullPreview";
+  | "view.fullPreview"
+  | "update.check";
 
 export type ShortcutBinding = {
   key: string;
@@ -142,6 +143,12 @@ export const DEFAULT_SHORTCUTS: ShortcutDefinition[] = [
     label: "Full Width Preview",
     scope: "global",
     bindings: [primaryAlt("ArrowRight")],
+  },
+  {
+    id: "update.check",
+    label: "Check for Updates…",
+    scope: "global",
+    bindings: [primary("u", { shift: true })],
   },
 ];
 

@@ -9,6 +9,7 @@ import type { EditorFormattingController } from "@/hooks/editor/useEditorFormatt
 import type { MenuGroup } from "@/components/MenuBar";
 import type { FocusEditorHandle } from "@/components/FocusModePane";
 import { Markdown } from "@/lib/api";
+import { invoke } from "@tauri-apps/api/core";
 import {
   resolveShortcutDefinitions,
   type ActionId,
@@ -116,6 +117,7 @@ export function useActions({
       "view.fullEditor": () => setSplit(100),
       "view.balancedSplit": () => setSplit(50),
       "view.fullPreview": () => setSplit(0),
+      "update.check": () => { void invoke("check_for_updates"); },
     }),
     [
       applyHeading,
@@ -199,6 +201,10 @@ export function useActions({
           label: shortcut.label,
           onSelect: actions[shortcut.id],
         })),
+      },
+      {
+        label: "Update",
+        items: [{ id: "update.check", label: "Check for Updates…", onSelect: actions["update.check"] }],
       },
     ],
     [actions, backendDisabled, shortcuts]

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { useEditor } from "@/hooks/useEditor";
 import { useAIActions } from "@/hooks/useAIActions";
 import { useFileIO } from "@/hooks/useFileIO";
@@ -19,6 +19,9 @@ import AIPanel, { type AIPanelTab } from "@/components/AIPanel";
 import CitationPanel from "@/components/CitationPanel";
 import StatusBar from "@/components/StatusBar";
 import { PANELS } from "@/types/panels";
+import { listen } from "@tauri-apps/api/event";
+import { confirm, message } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
 
 export default function HomePage() {
   const editor = useEditor();
@@ -65,6 +68,34 @@ export default function HomePage() {
     executeAIPrompt,
     syncSelectedText,
   });
+
+  // Listen for updater events from the Rust side.
+  useEffect(() => {
+    const updateAvailable = listen("update-available", async (event) => {
+      const messageText = event.payload as string;
+      const confirmed = await confirm(messageText, "Update Available");
+      if (confirmed) {
+        await invoke("download_and_install");
+      }
+    });
+
+    const updateUpToDate = listen("update-up-to-date", async (event) => {
+      const version = event.payload as string;
+      await message(`You're already on the latest version (${version}).`, "No Update Available");
+    });
+
+    const updateError = listen("update-error", async (event) => {
+      const error = event.payload as string;
+      await message(`Update check failed: ${error}`, "Update Error");
+    });
+
+    return () => {
+      updateAvailable.then((f) => f());
+      updateUpToDate.then((f) => f());
+      updateError.then((f) => f());
+    };
+  }, []);
+
   const handleTabSelect = useCallback((id: string) => {
     editor.setActiveTabId(id);
     const tab = editor.tabs.find((item) => item.id === id);

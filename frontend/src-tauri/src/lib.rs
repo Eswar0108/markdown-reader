@@ -3,9 +3,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::process::Command as StdCommand;
 use std::sync::{Arc, Mutex};
+use tauri::menu::{Menu, MenuId, MenuItem, Submenu};
 use tauri::{Emitter, Manager};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
+use tauri_plugin_updater::UpdaterExt;
 
 /// Shared state that holds the port the Python sidecar chose at runtime.
 struct BackendPort(Arc<Mutex<Option<u16>>>);
@@ -125,6 +127,48 @@ fn take_pending_open_files(state: tauri::State<'_, PendingOpenFiles>) -> Vec<Str
     std::mem::take(&mut *pending)
 }
 
+/// Ask the updater plugin whether a newer version is available.
+#[tauri::command]
+async fn check_for_updates(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    match app.updater() {
+        Ok(updater) => match updater.check().await {
+            Ok(update_info) => {
+                if let Some(update) = update_info {
+                    Ok(Some(format!(
+                        "Update available: {} → {}",
+                        app.package_info().version,
+                        update.version
+                    )))
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(e) => Err(format!("Update check failed: {e}")),
+        },
+        Err(e) => Err(format!("Updater not available: {e}")),
+    }
+}
+
+/// Download and install an available update, then restart the app.
+#[tauri::command]
+async fn download_and_install(app: tauri::AppHandle) -> Result<(), String> {
+    match app.updater() {
+        Ok(updater) => match updater.check().await {
+            Ok(Some(update)) => {
+                update
+                    .download_and_install(|_progress: usize, _total: Option<u64>| {}, || {})
+                    .await
+                    .map_err(|e| format!("Update install failed: {e}"))?;
+                let _ = app.restart();
+                Ok(())
+            }
+            Ok(None) => Err("No update available".to_string()),
+            Err(e) => Err(format!("Update check failed: {e}")),
+        },
+        Err(e) => Err(format!("Updater not available: {e}")),
+    }
+}
+
 fn terminate_process_tree(pid: u32) {
     if let Ok(output) = StdCommand::new("pgrep")
         .arg("-P")
@@ -209,6 +253,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::default().build())
         .manage(BackendPort(port_state))
         .manage(BackendToken(token_state))
         .manage(BackendRequestCancels(Mutex::new(HashMap::new())))
@@ -218,12 +263,44 @@ pub fn run() {
             get_backend_port,
             proxy_backend_request,
             cancel_backend_request,
-            take_pending_open_files
+            take_pending_open_files,
+            check_for_updates,
+            download_and_install
         ])
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
                 stop_backend(window.app_handle());
                 window.app_handle().exit(0);
+            }
+        })
+        .on_menu_event(|app, event| {
+            if event.id == MenuId::new("check_updates") {
+                let app_handle = app.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    match app_handle.updater() {
+                        Ok(updater) => match updater.check().await {
+                            Ok(Some(update)) => {
+                                let _ = app_handle.emit("update-available", format!(
+                                    "Update available: {} → {}",
+                                    app_handle.package_info().version,
+                                    update.version
+                                ));
+                            }
+                            Ok(None) => {
+                                let _ = app_handle.emit(
+                                    "update-up-to-date",
+                                    app_handle.package_info().version.to_string(),
+                                );
+                            }
+                            Err(e) => {
+                                let _ = app_handle.emit("update-error", e.to_string());
+                            }
+                        },
+                        Err(e) => {
+                            let _ = app_handle.emit("update-error", e.to_string());
+                        }
+                    }
+                });
             }
         })
         .setup(|app| {
@@ -242,6 +319,15 @@ pub fn run() {
                     .unwrap()
                     .extend(initial_files);
             }
+
+            // Add "Update" submenu at the far right of the native menu bar.
+            let check_update_item =
+                MenuItem::with_id(app, "check_updates", "Check for Updates…", true, None::<&str>)?;
+            let update_menu = Submenu::new(app, "Update", true)?;
+            update_menu.append(&check_update_item)?;
+            let default_menu = Menu::new(app)?;
+            default_menu.append(&update_menu)?;
+            app.set_menu(default_menu)?;
 
             if cfg!(debug_assertions) {
                 let backend_port = std::env::var("MARKDOWN_READER_BACKEND_PORT")
